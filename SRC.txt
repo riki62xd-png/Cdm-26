@@ -1,0 +1,478 @@
+import React, { useState, useEffect, useMemo, useCallback, createContext, useContext } from "react";
+import ReactDOM from "react-dom/client";
+
+// --- CONFIGURATION API (ADAPTÉE POUR GLITCH) ---
+const API_CONFIG = {
+  enabled: true,
+  baseUrl: "https://ton-projet.glitch.me/api/worldcup", // 👈 Remplace par ton URL Glitch
+  competitionId: "WC",
+  apiKey: null
+};
+
+// --- FONCTION POUR FETCH ---
+async function fdFetch(path, params = {}) {
+  if (!API_CONFIG.enabled) throw new Error("API désactivée");
+
+  const url = new URL(`${API_CONFIG.baseUrl}${path}`);
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== "") {
+      url.searchParams.set(k, v);
+    }
+  });
+
+  const res = await fetch(url.toString());
+  if (!res.ok) {
+    const message = await res.text().catch(() => "");
+    throw new Error(`API ${res.status}${message ? `: ${message}` : ""}`);
+  }
+  return res.json();
+}
+
+const fdCompetition = {
+  matches: (params = {}) => fdFetch(`/matches`, params),
+  teams: (params = {}) => fdFetch(`/teams`, params),
+  standings: (params = {}) => fdFetch(`/standings`, params)
+};
+
+// --- DONNÉES LOCALES (FALLBACK) ---
+const COUNTRIES = {
+  usa: { id: "usa", title: "États-Unis", flag: "🇺🇸", accent: "#7b9ef0", flagClass: "usa", badge: "11 villes hôtes", vibe: "Acclimatation moderne", desc: "Les États-Unis accueilleront la majorité des rencontres dans des stades ultramodernes." },
+  can: { id: "can", title: "Canada", flag: "🇨🇦", accent: "#ff8a8a", flagClass: "can", badge: "2 villes hôtes", vibe: "Ferveur croissante", desc: "Le Canada organisera plusieurs matchs à Toronto et Vancouver." },
+  mex: { id: "mex", title: "Mexique", flag: "🇲🇽", accent: "#5fd498", flagClass: "mex", badge: "3 villes hôtes", vibe: "Histoire mythique", desc: "Le Mexique devient le premier pays à accueillir trois éditions de la Coupe du Monde." }
+};
+
+const FEATURED = {
+  title: "Le match qui peut tout changer",
+  desc: "USA, Canada et Mexique entrent dans la dernière ligne droite avant l’ouverture du tournoi.",
+  tagLeft: "Analyse rapide",
+  cta: "Voir le détail →"
+};
+
+const BADGE_STYLES = {
+  live: { bg: "rgba(255,74,74,.1)", border: "rgba(255,74,74,.25)", color: "#ff8a8a" },
+  upcoming: { bg: "rgba(123,158,240,.1)", border: "rgba(123,158,240,.25)", color: "#9db4f5" },
+  finished: { bg: "rgba(255,255,255,.05)", border: "rgba(255,255,255,.1)", color: "var(--muted)" }
+};
+
+const ModalCtx = createContext(null);
+const useModal = () => useContext(ModalCtx);
+
+const localFallbackMatches = [
+  { id: 1, stage: "Match d'ouverture", groupe: "Groupe A", teamA: "Mexique", flagA: "🇲🇽", teamB: "À confirmer", flagB: "🏳️", venue: "Stade Azteca, Mexico", date: "Jeudi 11 juin 2026", badge: "À venir", badgeType: "upcoming", scoreA: 0, scoreB: 0, status: "À venir" },
+  { id: 2, stage: "Premier match canadien", groupe: "Groupe B", teamA: "Canada", flagA: "🇨🇦", teamB: "À confirmer", flagB: "🏳️", venue: "BMO Field, Toronto", date: "Vendredi 12 juin 2026", badge: "À venir", badgeType: "upcoming", scoreA: 0, scoreB: 0, status: "À venir" },
+  { id: 3, stage: "Entrée en lice des USA", groupe: "Groupe D", teamA: "États-Unis", flagA: "🇺🇸", teamB: "À confirmer", flagB: "🏳️", venue: "SoFi Stadium, Los Angeles", date: "Vendredi 12 juin 2026", badge: "À venir", badgeType: "upcoming", scoreA: 0, scoreB: 0, status: "À venir" },
+  { id: 4, stage: "Match de poule", groupe: "Groupe A", teamA: "Mexique", flagA: "🇲🇽", teamB: "À confirmer", flagB: "🏳️", venue: "Estadio Guadalajara, Guadalajara", date: "Jeudi 18 juin 2026", badge: "À venir", badgeType: "upcoming", scoreA: 0, scoreB: 0, status: "À venir" }
+];
+
+// --- FONCTION DE MAPPAGE DES DONNÉES API ---
+function mapApiMatch(m) {
+  const s = m.status?.short || m.status || "";
+  const isLive = ["LIVE", "1H", "2H", "HT", "IN_PLAY"].includes(s);
+  const isDone = ["FT", "AET", "PEN", "FINISHED"].includes(s);
+
+  const homeName = m.homeTeam?.name || m.teamA || "Domicile";
+  const awayName = m.awayTeam?.name || m.teamB || "Extérieur";
+
+  const getFlag = (name) => {
+    if (!name) return "🏳️";
+    const normalizedName = name.toLowerCase();
+    if (normalizedName.includes("usa") || normalizedName.includes("united states") || normalizedName.includes("états-unis")) return "🇺🇸";
+    if (normalizedName.includes("canada")) return "🇨🇦";
+    if (normalizedName.includes("mexico") || normalizedName.includes("mexique")) return "🇲🇽";
+    return "🏳️";
+  };
+
+  return {
+    id: m.id || Math.random().toString(36).substr(2, 9),
+    stage: "Match",
+    groupe: m.group || m.competition?.name || "Compétition",
+    teamA: homeName,
+    flagA: getFlag(homeName),
+    teamB: awayName,
+    flagB: getFlag(awayName),
+    venue: m.venue || "Stade",
+    date: m.utcDate ? new Date(m.utcDate).toLocaleDateString("fr-FR", { weekday: "long", day: "2-digit", month: "long", year: "numeric" }) : m.date || "",
+    badge: isLive ? `LIVE ${m.minute || 0}'` : (isDone ? "Terminé" : "À venir"),
+    badgeType: isLive ? "live" : (isDone ? "finished" : "upcoming"),
+    scoreA: m.score?.fullTime?.home ?? m.scoreA ?? 0,
+    scoreB: m.score?.fullTime?.away ?? m.scoreB ?? 0,
+    status: isDone ? "Terminé" : (isLive ? "En cours" : "À venir")
+  };
+}
+
+// --- COMPOSANT PRINCIPAL APP ---
+function App() {
+  const [screen, setScreen] = useState("home");
+  const [modalKey, setModalKey] = useState(null);
+  const [scores, setScores] = useState({ 1: { a: 0, b: 0 }, 2: { a: 0, b: 0 }, 3: { a: 0, b: 0 }, 4: { a: 0, b: 0 } });
+  const [matches, setMatches] = useState(localFallbackMatches);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const openModal = useCallback((k) => setModalKey(k), []);
+  const closeModal = useCallback(() => setModalKey(null), []);
+
+  const setScore = useCallback((id, side, delta) => {
+    setScores(prev => {
+      const next = { ...prev, [id]: { ...prev[id] } };
+      if (next[id] === undefined) next[id] = { a: 0, b: 0 };
+      next[id][side] = Math.max(0, (next[id][side] || 0) + delta);
+      return next;
+    });
+  }, []);
+
+  const refresh = useCallback(async () => {
+    try {
+      setError("");
+      setLoading(true);
+      const data = await fdCompetition.matches();
+      const items = Array.isArray(data?.matches) ? data.matches : [];
+      if (items.length > 0) {
+        setMatches(items.map(mapApiMatch));
+      } else {
+        setMatches(localFallbackMatches);
+      }
+    } catch (e) {
+      console.error(e);
+      setError("Impossible de charger les matchs. Mode hors ligne activé.");
+      setMatches(localFallbackMatches);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const interval = setInterval(refresh, 60000); // Rafraîchit toutes les minutes
+    return () => clearInterval(interval);
+  }, [refresh]);
+
+  return (
+    <ModalCtx.Provider value={{ openModal }}>
+      <div className="app">
+        <div className="brand-stripe">
+          <div className="bs-usa" />
+          <div className="bs-can" />
+          <div className="bs-mex" />
+        </div>
+
+        <header>
+          <div className="header-row">
+            <div className="brand-logo">
+              <div className="logo-badge">
+                <div className="logo-badge-inner">26</div>
+              </div>
+              <div className="brand-name">CDM 26</div>
+            </div>
+            <div className="live-indicator">
+              <span className="live-dot"></span>
+              <span className="live-text">LIVE</span>
+            </div>
+          </div>
+        </header>
+
+        <main className="content">
+          {loading && <div className="loading">Chargement des matchs...</div>}
+          {error && <div className="error">{error}</div>}
+          <HomeScreen active={screen === "home"} setScreen={setScreen} />
+          <PronosScreen active={screen === "pronos"} matches={matches} scores={scores} setScore={setScore} />
+          <VoteScreen active={screen === "vote"} />
+        </main>
+
+        <BottomNav active={screen} setScreen={setScreen} />
+        <CountryModal activeKey={modalKey} onClose={closeModal} matches={matches} />
+      </div>
+    </ModalCtx.Provider>
+  );
+}
+
+// --- COMPOSANTS D'INTERFACE ---
+function HomeScreen({ active, setScreen }) {
+  const { openModal } = useModal();
+  return (
+    <section className={`screen ${active ? "active" : ""}`}>
+      <div className="hero">
+        <div className="chips">
+          {Object.values(COUNTRIES).map(c => (
+            <button key={c.id} className={`chip ${c.id}`} onClick={() => openModal(c.id)}>
+              {c.flag} {c.id.toUpperCase()} ↗
+            </button>
+          ))}
+        </div>
+        <div className="hero-title">
+          <span>Mondial 2026</span>
+          <span className="stroke">les secrets</span>
+          <span className="green">dévoilés.</span>
+        </div>
+        <div className="hero-desc">
+          Les faits essentiels, les pays hôtes et les repères clés du tournoi, réunis dans une lecture simple et rapide.
+        </div>
+        <button className="btn btn-primary" onClick={() => setScreen("pronos")}>Voir les pronostics</button>
+      </div>
+
+      <div className="api-note">
+        <b>API Football-Data.org :</b> Les données sont chargées via ton proxy.
+      </div>
+
+      <div className="grid-3">
+        <div className="mini-card"><div className="mini-num" style={{ color: "var(--accent)" }}>48</div><div className="mini-label">équipes</div></div>
+        <div className="mini-card"><div className="mini-num" style={{ color: "#ff8a8a" }}>16</div><div className="mini-label">villes</div></div>
+        <div className="mini-card"><div className="mini-num" style={{ color: "#5fd498" }}>104</div><div className="mini-label">matchs</div></div>
+      </div>
+
+      <button className="card" onClick={() => setScreen("pronos")}>
+        <div className="section-title" style={{ marginTop: 0 }}>Aujourd'hui · À la une</div>
+        <div className="card-title">{FEATURED.title}</div>
+        <div className="card-desc" style={{ marginBottom: 12 }}>{FEATURED.desc}</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span className="section-title" style={{ margin: 0 }}>{FEATURED.tagLeft}</span>
+          <span style={{ fontSize: 11, fontWeight: 700 }}>{FEATURED.cta}</span>
+        </div>
+      </button>
+
+      <div className="section-title">Pays hôtes</div>
+      {Object.values(COUNTRIES).map(c => (
+        <button key={c.id} className="card" onClick={() => openModal(c.id)}>
+          <div className="country-row">
+            <div className="country-left">
+              <div className={`flag ${c.flagClass}`} />
+              <div>
+                <div className="country-name">{c.title}</div>
+                <div className="country-count">{c.badge}</div>
+              </div>
+            </div>
+            <div style={{ color: "var(--muted)", fontSize: 16 }}>›</div>
+          </div>
+        </button>
+      ))}
+    </section>
+  );
+}
+
+function PronosScreen({ active, matches, scores, setScore }) {
+  const [group, setGroup] = useState("all");
+  const [date, setDate] = useState("all");
+  const groups = useMemo(() => ["all", ...new Set(matches.map(m => m.groupe))], [matches]);
+  const dates = useMemo(() => ["all", ...new Set(matches.map(m => m.date))], [matches]);
+  const visible = useMemo(() => matches.filter(m => (group === "all" || m.groupe === group) && (date === "all" || m.date === date)), [matches, group, date]);
+
+  return (
+    <section className={`screen ${active ? "active" : ""}`}>
+      <div className="section-title" style={{ marginTop: 0 }}>Aujourd'hui</div>
+      <div style={{ fontFamily: "var(--fh)", fontSize: 30, letterSpacing: ".06em", marginBottom: 4 }}>Calendrier & scores</div>
+      <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 16 }}>Les matchs sont chargés depuis l'API.</div>
+
+      <div className="filters">
+        <div className="field">
+          <label>Groupe</label>
+          <select value={group} onChange={e => setGroup(e.target.value)}>
+            {groups.map(g => <option key={g} value={g}>{g === "all" ? "Tous les groupes" : g}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label>Date</label>
+          <select value={date} onChange={e => setDate(e.target.value)}>
+            {dates.map(d => <option key={d} value={d}>{d === "all" ? "Toutes les dates" : d}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <button className="reset-btn" onClick={() => { setGroup("all"); setDate("all"); }}>Réinitialiser les filtres</button>
+
+      <div>
+        {visible.length > 0 ? visible.map(m => {
+          const b = BADGE_STYLES[m.badgeType] || BADGE_STYLES.upcoming;
+          const score = scores[m.id] || { a: m.scoreA || 0, b: m.scoreB || 0 };
+          return (
+            <div key={m.id} className="match">
+              <div className="match-top" style={{ background: m.badgeType === "live" ? "var(--can-red)" : "var(--accent)" }} />
+              <div className="match-inner">
+                <div className="match-header-row">
+                  <span className={`badge ${m.badgeType || "upcoming"}`} style={{ background: b.bg, borderColor: b.border, color: b.color }}>
+                    {m.badgeType === "live" && <span className="pulse-dot"></span>}
+                    {m.badge}
+                  </span>
+                  <span>{m.venue}</span>
+                </div>
+
+                <div className="match-teams-row">
+                  <div className="team">
+                    <div className="team-name">{m.flagA} {m.teamA}</div>
+                    <div className="team-meta">{m.stage}</div>
+                    <div className="score-panel">
+                      <button className="score-btn" onClick={() => setScore(m.id, "a", -1)}>-</button>
+                      <span className="score-num">{score.a}</span>
+                      <button className="score-btn" onClick={() => setScore(m.id, "a", 1)}>+</button>
+                    </div>
+                  </div>
+
+                  <div className="vs">VS</div>
+
+                  <div className="team right">
+                    <div className="team-name">{m.teamB} {m.flagB}</div>
+                    <div className="team-meta">{m.groupe}</div>
+                    <div className="score-panel">
+                      <button className="score-btn" onClick={() => setScore(m.id, "b", -1)}>-</button>
+                      <span className="score-num">{score.b}</span>
+                      <button className="score-btn" onClick={() => setScore(m.id, "b", 1)}>+</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="match-footer">
+                  <div className="stat-box">
+                    <div className="stat-label">Date</div>
+                    <div style={{ fontWeight: 700, fontSize: 13 }}>{m.date}</div>
+                  </div>
+                  <div className="stat-box">
+                    <div className="stat-label">Statut</div>
+                    <div className="stat-value" style={{ fontSize: 16, color: "#5fd498" }}>{m.status}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        }) : <div className="empty">Aucun match ne correspond à ces filtres.</div>}
+      </div>
+    </section>
+  );
+}
+
+function VoteScreen({ active }) {
+  return (
+    <section className={`screen ${active ? "active" : ""}`}>
+      <div className="section-title" style={{ marginTop: 0 }}>Vote vainqueur</div>
+      <div style={{ fontFamily: "var(--fh)", fontSize: 30, letterSpacing: ".06em", marginBottom: 4 }}>Qui va gagner ?</div>
+      <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 16 }}>Section conservée pour plus tard.</div>
+      <div className="card" style={{ textAlign: "center" }}>
+        <div style={{ fontSize: 24, marginBottom: 8 }}>🏆</div>
+        <div style={{ fontFamily: "var(--fh)", fontSize: 20, letterSpacing: ".05em", color: "var(--gold)" }}>Vainqueur : à définir</div>
+        <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>Tu pourras transformer cette partie plus tard en vrai vote.</div>
+      </div>
+    </section>
+  );
+}
+
+function BottomNav({ active, setScreen }) {
+  const tabs = [
+    { id: "home", label: "Accueil", icon: "🏠" },
+    { id: "pronos", label: "Pronos", icon: "📈" },
+    { id: "vote", label: "Vote", icon: "🗳️" }
+  ];
+
+  return (
+    <nav className="nav">
+      {tabs.map(t => (
+        <button key={t.id} className={`tab ${active === t.id ? "active" : ""}`} onClick={() => setScreen(t.id)}>
+          <span className="icon">{t.icon}</span>
+          {t.label}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+function CountryModal({ activeKey, onClose, matches }) {
+  const [tab, setTab] = useState("infos");
+  useEffect(() => { if (activeKey) setTab("infos"); }, [activeKey]);
+  useEffect(() => {
+    if (!activeKey) return;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = ""; };
+  }, [activeKey]);
+
+  if (!activeKey) return null;
+  const c = COUNTRIES[activeKey];
+
+  const countryMatches = matches.filter(m =>
+    m.teamA?.toLowerCase().includes(c.title.toLowerCase()) ||
+    m.teamB?.toLowerCase().includes(c.title.toLowerCase()) ||
+    m.venue?.toLowerCase().includes(c.title.toLowerCase())
+  );
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+        <div className="sheet-handle"></div>
+        <button className="close-btn" onClick={onClose} aria-label="Fermer">×</button>
+
+        <div className="modal-head">
+          <div className="modal-head-bg" style={{
+            background:
+              c.id === "usa" ? "repeating-linear-gradient(180deg,#B22234 0,#B22234 14px,#fff 14px,#fff 28px)" :
+              c.id === "can" ? "linear-gradient(90deg,#FF0000 22%,#fff 22%,#fff 78%,#FF0000 78%)" :
+              "linear-gradient(90deg,#006847 33%,#fff 33%,#fff 66%,#CE1126 66%)"
+          }} />
+          <div className="modal-head-overlay"></div>
+          <div className="modal-head-title">{c.flag} {c.title}</div>
+        </div>
+
+        <div className="modal-tabs">
+          <button className={`modal-tab ${tab === "infos" ? "active" : ""}`} onClick={() => setTab("infos")}>Généralités</button>
+          <button className={`modal-tab ${tab === "matchs" ? "active" : ""}`} onClick={() => setTab("matchs")}>Matchs ({countryMatches.length})</button>
+        </div>
+
+        <div className="modal-content">
+          {tab === "infos" && (
+            <>
+              <div className="pill-row">
+                <span className="pill">{c.badge}</span>
+                <span className="pill">{c.vibe}</span>
+              </div>
+              <div className="info-text">{c.desc}</div>
+            </>
+          )}
+
+          {tab === "matchs" && <CountryMatchesTab matches={countryMatches} country={c} />}
+
+          <button className="btn btn-primary" style={{ marginTop: 18 }} onClick={onClose}>Fermer le guide</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CountryMatchesTab({ matches, country }) {
+  const [selectedGroup, setSelectedGroup] = useState("all");
+  const [selectedDate, setSelectedDate] = useState("all");
+  const groups = ["all", ...new Set(matches.map(m => m.groupe))].filter(Boolean);
+  const dates = ["all", ...new Set(matches.map(m => m.date))].filter(Boolean);
+
+  const visibleMatches = useMemo(() => matches.filter(m => (selectedGroup === "all" || m.groupe === selectedGroup) && (selectedDate === "all" || m.date === selectedDate)), [matches, selectedGroup, selectedDate]);
+
+  return (
+    <div>
+      <div className="filters">
+        <div className="field">
+          <label>Groupe</label>
+          <select value={selectedGroup} onChange={(e) => setSelectedGroup(e.target.value)}>
+            {groups.map(g => <option key={g} value={g}>{g === "all" ? "Tous les groupes" : g}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label>Date</label>
+          <select value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)}>
+            {dates.map(d => <option key={d} value={d}>{d === "all" ? "Toutes les dates" : d}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <button className="reset-btn" onClick={() => { setSelectedGroup("all"); setSelectedDate("all"); }}>Réinitialiser les filtres</button>
+
+      {visibleMatches.length > 0 ? (
+        visibleMatches.map((m, idx) => (
+          <div key={`${m.id}-${idx}`} className="card" style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>{m.flagA} {m.teamA} vs {m.teamB} {m.flagB}</div>
+            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>{m.groupe} · {m.venue}</div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: country.accent, marginTop: 8 }}>{m.date}</div>
+          </div>
+        ))
+      ) : (
+        <div className="empty">Aucun match ne correspond à ces filtres.</div>
+      )}
+    </div>
+  );
+}
+
+// --- RENDU DE L'APPLICATION ---
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
